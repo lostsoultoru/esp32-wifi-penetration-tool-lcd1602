@@ -1,9 +1,15 @@
 
 # ESP32 Wi-Fi Penetration Tool (mod)
 
-Joystick: X -> GPIO36, Y -> GPIO39, SW -> GPIO34
-LCD1602 connected via I2C PCF8574 backpack at address 0x27 SDA - 13 SCL - 14    
+Green - GPIO17
+Red - GPIO5
+Up button - 21
+Select button - 19 
+Down button - 18
+LCD SDA - 32
+LCD SCL - 33
 
+And 4 connected in parallel connected to 3.3v on esp32
 
 This project introduces an universal tool for ESP32 platform for implementing various Wi-Fi attacks. It provides some common functionality that is commonly used in Wi-Fi attacks and makes implementing new attacks a bit simpler. It also includes Wi-Fi attacks itself like capturing PMKIDs from handshakes, or handshakes themselves by different methods like starting rogue duplicated AP or sending deauthentication frames directly, etc...
 
