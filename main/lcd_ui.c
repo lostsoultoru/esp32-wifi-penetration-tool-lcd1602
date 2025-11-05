@@ -24,22 +24,37 @@
 
 static const char *TAG = "lcd_ui";
 
-#define I2C_MASTER_SCL_IO 14
-#define I2C_MASTER_SDA_IO 13
+#define I2C_MASTER_SCL_IO 33
+#define I2C_MASTER_SDA_IO 32
 #define I2C_MASTER_NUM I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ 100000
 #define PCF8574_ADDR 0x27
 
-#define JOY_ADC_CHANNEL_X ADC1_CHANNEL_6
-#define JOY_ADC_CHANNEL_Y ADC1_CHANNEL_7
-#define JOY_BUTTON_GPIO 32
+#define BUTTON_UP_GPIO 21
+#define BUTTON_MIDDLE_GPIO 19
+#define BUTTON_DOWN_GPIO 18
 
-static int read_adc_channel(adc1_channel_t channel){
-    return adc1_get_raw(channel);
+#define DEBUG_GREEN_GPIO 17
+#define DEBUG_RED_GPIO 5
+
+static bool read_button_up(void){
+    return gpio_get_level(BUTTON_UP_GPIO) == 1;
 }
 
-static bool read_button(void){
-    return gpio_get_level(JOY_BUTTON_GPIO) == 0;
+static bool read_button_middle(void){
+    return gpio_get_level(BUTTON_MIDDLE_GPIO) == 1;
+}
+
+static bool read_button_down(void){
+    return gpio_get_level(BUTTON_DOWN_GPIO) == 1;
+}
+
+static inline void debug_green(bool on){
+    gpio_set_level(DEBUG_GREEN_GPIO, on ? 1 : 0);
+}
+
+static inline void debug_red(bool on){
+    gpio_set_level(DEBUG_RED_GPIO, on ? 1 : 0);
 }
 
 static esp_err_t i2c_master_init(void){
@@ -149,16 +164,37 @@ static void post_attack_request(uint8_t ap_id, uint8_t type, uint8_t method, uin
 }
 
 static void lcd_ui_task(void *arg){
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(JOY_ADC_CHANNEL_X, ADC_ATTEN_DB_11);
-    adc1_config_channel_atten(JOY_ADC_CHANNEL_Y, ADC_ATTEN_DB_11);
-    gpio_config_t pcfg = { .pin_bit_mask = (1ULL<<JOY_BUTTON_GPIO), .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
-    gpio_config(&pcfg);
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = (1ULL<<BUTTON_UP_GPIO) | (1ULL<<BUTTON_MIDDLE_GPIO) | (1ULL<<BUTTON_DOWN_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE
+    };
+    gpio_config(&btn_cfg);
+
+    /* configure debug LED pins as outputs and default them off */
+    gpio_config_t dbg_cfg = {
+        .pin_bit_mask = (1ULL<<DEBUG_GREEN_GPIO) | (1ULL<<DEBUG_RED_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&dbg_cfg);
+    gpio_set_level(DEBUG_GREEN_GPIO, 0);
+    gpio_set_level(DEBUG_RED_GPIO, 0);
 
     if(i2c_master_init() != ESP_OK){
         ESP_LOGW(TAG, "I2C init failed - LCD output will be in serial log only");
+        /* turn on red debug LED to indicate I2C/init error */
+        debug_red(true);
     } else {
         lcd_init_display();
+        /* brief green blink to indicate successful init */
+        debug_red(false);
+        debug_green(true);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        debug_green(false);
     }
 
     wifictl_scan_nearby_aps();
@@ -189,11 +225,16 @@ static void lcd_ui_task(void *arg){
             snprintf(line1, sizeof(line1), "ATTACK %s", attack_type_names[selected_type]);
             snprintf(line2, sizeof(line2), "Left: %3us", remaining);
             lcd_print_lines(line1,line2);
-            if(read_button()){
+            if(read_button_middle()){
+                /* indicate selection with green blink */
+                debug_green(true);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                debug_green(false);
+
                 vTaskDelay(pdMS_TO_TICKS(50));
                 menu = MENU_AP;
                 ui_triggered_attack = false;
-                while(read_button()) vTaskDelay(pdMS_TO_TICKS(20));
+                while(read_button_middle()) vTaskDelay(pdMS_TO_TICKS(20));
             }
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
@@ -202,11 +243,17 @@ static void lcd_ui_task(void *arg){
             snprintf(line1, sizeof(line1), "Attack finished");
             snprintf(line2, sizeof(line2), "Press to menu");
             lcd_print_lines(line1,line2);
-            if(read_button()){
+            if(read_button_middle()){
+                /* attack finished: turn off green, blink red */
+                debug_green(false);
+                debug_red(true);
+                vTaskDelay(pdMS_TO_TICKS(150));
+                debug_red(false);
+
                 vTaskDelay(pdMS_TO_TICKS(50));
                 menu = MENU_AP;
                 ui_triggered_attack = false;
-                while(read_button()) vTaskDelay(pdMS_TO_TICKS(20));
+                while(read_button_middle()) vTaskDelay(pdMS_TO_TICKS(20));
             }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
@@ -244,29 +291,50 @@ static void lcd_ui_task(void *arg){
                 break;
         }
         lcd_print_lines(line1,line2);
-        int y = read_adc_channel(JOY_ADC_CHANNEL_Y);
-        if(y < 1000){
+        
+            if(read_button_up()){
             if(menu==MENU_AP && ap_count>0){ if(selected_ap>0) selected_ap--; }
             else if(menu==MENU_TYPE){ if(selected_type>0) selected_type--; }
             else if(menu==MENU_METHOD){ if(selected_type==ATTACK_TYPE_HANDSHAKE){ if(selected_method>0) selected_method--; } else if(selected_type==ATTACK_TYPE_DOS){ if(selected_method>0) selected_method--; } else { if(selected_method>0) selected_method--; } }
             else if(menu==MENU_TIMEOUT){ if(timeout>5) timeout-=5; }
+            while(read_button_up()) vTaskDelay(pdMS_TO_TICKS(20));
+                /* small red blink to indicate up press */
+                debug_red(true);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                debug_red(false);
             vTaskDelay(pdMS_TO_TICKS(200));
-        } else if(y > 3000){
+        }
+        
+        if(read_button_down()){
             if(menu==MENU_AP && ap_count>0){ if(selected_ap+1<ap_count) selected_ap++; }
             else if(menu==MENU_TYPE){ if(selected_type<3) selected_type++; }
             else if(menu==MENU_METHOD){ if(selected_type==ATTACK_TYPE_HANDSHAKE){ selected_method = (selected_method+1) % 3; } else if(selected_type==ATTACK_TYPE_DOS){ selected_method = (selected_method+1) % 3; } else { selected_method++; } }
             else if(menu==MENU_TIMEOUT){ timeout+=5; }
+            while(read_button_down()) vTaskDelay(pdMS_TO_TICKS(20));
+            /* small red blink to indicate down press */
+            debug_red(true);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            debug_red(false);
             vTaskDelay(pdMS_TO_TICKS(200));
         }
-        if(read_button()){
+        
+        if(read_button_middle()){
+            /* indicate selection with green blink */
+            debug_green(true);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            debug_green(false);
+
             vTaskDelay(pdMS_TO_TICKS(50));
             if(menu==MENU_START){
                 post_attack_request(selected_ap, selected_type, selected_method, timeout);
+                /* indicate attack start */
+                debug_green(true);
             } else {
                 menu = (menu + 1) % 5;
             }
-            while(read_button()) vTaskDelay(pdMS_TO_TICKS(20));
+            while(read_button_middle()) vTaskDelay(pdMS_TO_TICKS(20));
         }
+        
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 }
