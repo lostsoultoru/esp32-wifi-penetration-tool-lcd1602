@@ -19,7 +19,7 @@
 #include "wifi_controller.h"
 #include "webserver.h"
 #include "wifi_scan.h"
-#include "lcd_ui.h"
+#include "display_ui.h"
 
 static const char* TAG = "main";
 
@@ -30,7 +30,7 @@ void app_main(void)
     wifictl_mgmt_ap_start();
     wifi_scan_print_serial();
     attack_init();
-    // start LCD UI (joystick + LCD) to configure attacks
-    lcd_ui_start();
+    // start Display UI (joystick + OLED) to configure attacks
+    display_ui_start();
     webserver_run();
 }
